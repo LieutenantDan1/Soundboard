@@ -1,6 +1,7 @@
 #include <termios.h>
 #include <pwd.h>
 #include <stdio.h>
+#include <sys/ioctl.h>
 #include <sys/types.h>
 #include <unistd.h>
 #include "utils.hpp"
@@ -36,5 +37,12 @@ namespace utils
         if (home_dir == nullptr)
             home_dir = getpwuid(getuid())->pw_dir;
         return home_dir;
+    }
+
+    std::pair<size_t, size_t> get_terminal_size()
+    {
+        winsize w;
+        ioctl(0, TIOCGWINSZ, &w);
+        return { w.ws_col, w.ws_row };
     }
 }

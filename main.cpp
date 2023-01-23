@@ -1,5 +1,5 @@
+#include <algorithm>
 #include <filesystem>
-// #include <fstream>
 #include <iostream>
 #include <list>
 #include <memory>
@@ -11,8 +11,11 @@
 
 namespace fs = std::filesystem;
 
-const size_t STREAM_THRESHOLD = 1048576;
+// Files larger than this size (in bytes) will be streamed instead of held in memory
+const size_t STREAM_THRESHOLD = 1024 * 1024;
+// How many sounds can be playing at the same time
 const size_t MAX_POLYPHONY = 256;
+// Keys will be assigned to sounds in this order
 const std::string KEYS = 
     "`1234567890-=qwe"
     "rtyuiop[]\\asdfg"
@@ -74,8 +77,11 @@ public:
 
 class SoundClip
 {
+protected:
+    fs::path _path;
+
 public:
-    SoundClip()
+    SoundClip(const fs::path& path) : _path(path)
     {}
     SoundClip(SoundClip&&) = delete;
     SoundClip(const SoundClip&) = delete;
@@ -84,20 +90,26 @@ public:
 
     virtual void play(std::list<std::unique_ptr<SoundInstance>>& pool) const
     {}
+    virtual bool valid() const
+    {
+        return true;
+    }
+
+    std::string name() const
+    {
+        return _path.stem();
+    }
 };
 
 class StreamedSoundClip : public SoundClip
 {
-private:
-    std::string _filename;
-
 public:
-    StreamedSoundClip(const std::string& filename) : _filename(filename)
+    StreamedSoundClip(const fs::path& path) : SoundClip(path)
     {}
 
     void play(std::list<std::unique_ptr<SoundInstance>>& pool) const override
     {
-        pool.emplace_back(new StreamedSoundInstance(_filename));
+        pool.emplace_back(new StreamedSoundInstance(_path));
     }
 };
 
@@ -108,15 +120,20 @@ private:
     sf::SoundBuffer _buffer;
 
 public:
-    MemorySoundClip(const std::string& filename)
+    MemorySoundClip(const fs::path& path) : SoundClip(path)
     {
-        _valid = _buffer.loadFromFile(filename);
+        _valid = _buffer.loadFromFile(_path);
     }
 
     void play(std::list<std::unique_ptr<SoundInstance>>& pool) const override
     {
         if (_valid)
             pool.emplace_back(new MemorySoundInstance(_buffer));
+    }
+
+    bool valid() const override
+    {
+        return _valid;
     }
 };
 
@@ -128,7 +145,7 @@ SoundClip* load_sound(const fs::path& filename)
         return new MemorySoundClip(filename);
 }
 
-std::unordered_map<char, std::unique_ptr<SoundClip>> load_sounds()
+std::vector<std::unique_ptr<SoundClip>> load_sounds()
 {
     fs::path path = utils::get_home_dir();
     path /= ".sb";
@@ -145,23 +162,45 @@ std::unordered_map<char, std::unique_ptr<SoundClip>> load_sounds()
         return {};
     }
 
-    size_t key = 0;
-    std::unordered_map<char, std::unique_ptr<SoundClip>> sounds;
+    std::vector<std::unique_ptr<SoundClip>> sounds;
     for (const auto& entry: fs::recursive_directory_iterator(path))
     {
-        if (key == KEYS.size())
+        if (sounds.size() == KEYS.size())
+        {
+            std::cout << "Warning: number of sounds exceeds number of available keys!\n";
             break;
-        auto it = sounds.emplace(KEYS[key], load_sound(entry.path())).first;
-        std::cout << KEYS[key] << ": " << entry.path().stem().string() << '\n';
-        ++key;
+        }
+        SoundClip* sound = load_sound(entry.path());
+        if (sound->valid())
+            sounds.emplace_back(load_sound(entry.path()));
+        // error message printed by SFML sound loading
     }
  
     return sounds;
 }
 
+std::unordered_map<char, std::unique_ptr<SoundClip>> map_sounds()
+{
+    std::vector<std::unique_ptr<SoundClip>> sound_list = load_sounds();
+    std::sort(sound_list.begin(), sound_list.end(),
+    [] (const std::unique_ptr<SoundClip>& left, const std::unique_ptr<SoundClip>& right)
+    {
+        return left->name() <= right->name();
+    });
+    std::unordered_map<char, std::unique_ptr<SoundClip>> sounds;
+    sounds.reserve(sound_list.size());
+    size_t key = 0;
+    for (std::unique_ptr<SoundClip>& sound: sound_list)
+    {
+        std::cout << KEYS[key] << ": " << sound->name() << '\n';
+        sounds.emplace(KEYS[key++], std::move(sound));
+    }
+    return sounds;
+}
+
 int main()
 {
-    std::unordered_map<char, std::unique_ptr<SoundClip>> sounds = load_sounds();
+    std::unordered_map<char, std::unique_ptr<SoundClip>> sounds = map_sounds();
     if (sounds.empty())
         return 0;
     std::list<std::unique_ptr<SoundInstance>> pool;
